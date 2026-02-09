@@ -55,6 +55,12 @@ struct ContentView: View {
                 }
             }
             .background {
+                // 振動受信時の背景色点滅
+                (appModel.isFlashing ? Color.red.opacity(0.3) : Color.clear)
+                    .animation(.easeInOut(duration: 0.15), value: appModel.isFlashing)
+                    .ignoresSafeArea()
+            }
+            .background {
                 // 音量ボタン監視用（ベストエフォート）。UI上は見えない/邪魔にならないようにする。
                 VolumeViewHost()
                     .frame(width: 0, height: 0)
@@ -66,7 +72,7 @@ struct ContentView: View {
     private var longVibrationSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "長振動")
-            Text("相手に約4秒の連続振動を送ります。音量ボタン長押しでも送信できます。")
+            Text("相手に約4秒の連続振動を送ります。音量ボタンを0.5秒以内に5回以上押しても送信できます。受信時は画面背景が赤く点滅します。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Button {
@@ -122,7 +128,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "シフト回数")
 
-            Text("音量ボタンが取れない場合に備えて、必ずボタン送信も残しています。")
+            Text("音量ボタンが取れない場合に備えて、必ずボタン送信も残しています。相手が受信すると、指定回数分の振動と画面背景の赤い点滅が表示されます。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -145,7 +151,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "音量ボタン（ベストエフォート）")
 
-            Text("ルーム入室中は常に音量ボタン入力を有効にしています。iOSは物理音量ボタンを公式にフックできないため、音量変化（outputVolume）を監視して押下扱いにしています。システム音量が上下限付近だと反応しない場合があります。")
+            Text("ルーム入室中は常に音量ボタン入力を有効にしています。音量ボタンを押すたびにカウントされ、最後の押下から1秒後に回数分の振動が送信されます（例：5回押すと5回振動）。0.5秒以内に5回以上押すと長振動（約4秒）を送信します。\n\n音量ボタン押下後、自動的に音量が0%にリセットされます。音量増加ボタン（+）を使えば、1回押すごとに1段階ずつ確実に反応します（1回押す→1回振動、9回押す→9回振動）。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -233,6 +239,7 @@ final class AppModel: ObservableObject {
     @Published var logs: [LogItem] = []
     @Published var lastErrorMessage: String?
     @Published var isVolumeInputEnabled: Bool = false
+    @Published var isFlashing: Bool = false
 
     @Published private(set) var firebaseConfigured: Bool = false
     @Published private(set) var myUid: String?
@@ -256,6 +263,12 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             Task { await self.sendCount(count) }
         }
+        
+        self.countAggregator.onCommitCompleted = { [weak self] in
+            guard let self else { return }
+            // 送信完了後すぐに音量を0%にリセット
+            self.volumeButtonObserver.resetVolumeAfterSend()
+        }
 
         self.volumeButtonObserver.onPress = { [weak self] in
             guard let self else { return }
@@ -264,15 +277,26 @@ final class AppModel: ObservableObject {
                 return
             }
             self.recentPressTimestamps.append(now)
-            self.recentPressTimestamps.removeAll { now.timeIntervalSince($0) > 2.0 }
-            if self.recentPressTimestamps.count >= 4,
+            self.recentPressTimestamps.removeAll { now.timeIntervalSince($0) > 0.5 }
+            
+            // 0.5秒以内に5回以上押された場合は長押しとみなす
+            if self.recentPressTimestamps.count >= 5,
                let first = self.recentPressTimestamps.first,
-               now.timeIntervalSince(first) >= 1.0 {
+               now.timeIntervalSince(first) <= 0.5 {
                 self.recentPressTimestamps.removeAll()
                 self.longPressCooldownUntil = now.addingTimeInterval(2.0)
-                Task { await self.sendLongVibration() }
+                self.countAggregator.reset()
+                Task {
+                    await self.sendLongVibration()
+                    // 長振動送信後も音量をリセット
+                    await MainActor.run {
+                        self.volumeButtonObserver.resetVolumeAfterSend()
+                    }
+                }
                 return
             }
+            
+            // 通常の押下はCountAggregatorで集約（最後の押下から1秒後に送信）
             self.countAggregator.press()
         }
     }
@@ -425,10 +449,17 @@ final class AppModel: ObservableObject {
             self.seenEventIds.insert(event.eventId)
             if event.isLongVibration {
                 self.logs.insert(LogItem(kind: .rx, count: 0, date: Date(), isLongVibration: true), at: 0)
-                Task { await self.hapticsPlayer.playLong(duration: 4.0) }
+                Task {
+                    await self.hapticsPlayer.playLong(duration: 4.0)
+                }
+                self.flashBackground(duration: 4.0)
             } else {
                 self.logs.insert(LogItem(kind: .rx, count: event.count, date: Date()), at: 0)
-                Task { await self.hapticsPlayer.play(count: event.count) }
+                Task {
+                    await self.hapticsPlayer.play(count: event.count)
+                }
+                let duration = Double(event.count) * (HapticsPlayer.vibrationDuration + HapticsPlayer.gapBetweenVibrations)
+                self.flashBackground(duration: duration)
             }
         }
     }
@@ -455,6 +486,22 @@ final class AppModel: ObservableObject {
             logs.insert(LogItem(kind: .tx, count: 0, date: Date(), isLongVibration: true), at: 0)
         } catch {
             lastErrorMessage = "送信失敗: \(error.localizedDescription)"
+        }
+    }
+    
+    /// 背景色を点滅させる
+    private func flashBackground(duration: TimeInterval) {
+        guard duration > 0 else { return }
+        isFlashing = true
+        Task {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            } catch {
+                // キャンセル時も点滅を終了
+            }
+            await MainActor.run {
+                self.isFlashing = false
+            }
         }
     }
 }
@@ -696,6 +743,7 @@ final class CountAggregator: ObservableObject {
     @Published private(set) var isCoolingDown: Bool = false
 
     var onCommit: ((Int) -> Void)?
+    var onCommitCompleted: (() -> Void)?
 
     private var debounceTask: Task<Void, Never>?
     private var cooldownTask: Task<Void, Never>?
@@ -709,7 +757,7 @@ final class CountAggregator: ObservableObject {
         debounceTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await Task.sleep(nanoseconds: 600_000_000) // 0.6s
+                try await Task.sleep(nanoseconds: 1_000_000_000) // 1.0s
             } catch {
                 return
             }
@@ -731,6 +779,9 @@ final class CountAggregator: ObservableObject {
         currentCount = 0
         isCoolingDown = true
         onCommit?(n)
+        
+        // 送信完了を通知
+        onCommitCompleted?()
 
         cooldownTask?.cancel()
         cooldownTask = Task { [weak self] in
@@ -786,22 +837,44 @@ final class HapticsPlayer {
     private var impactGenerator: UIImpactFeedbackGenerator?
     #endif
 
-    /// 1回の振動の長さ（秒）。着信バイブに近づけるため長め（APIの強度は0〜1で上限のため、長さで補う）
-    private static let vibrationDuration: Double = 1.0
+    /// 1回の振動の長さ（秒）
+    static let vibrationDuration: Double = 0.5
     /// 振動と振動の間隔（秒）。長い振動のあと区切りをはっきり
-    private static let gapBetweenVibrations: Double = 0.15
+    static let gapBetweenVibrations: Double = 0.15
     /// 1回分のスロット（振動＋間隔）
     private static let slotDuration: Double = vibrationDuration + gapBetweenVibrations
 
     /// ルーム入室時に呼び、エンジンを事前起動しておく（初回再生時の弱い振動を防ぐ）
     func prepareEngine() {
+        #if canImport(AVFoundation)
+        // AVAudioSessionを設定して振動を最大化
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try audioSession.setActive(true)
+            print("✅ [Haptics] AVAudioSession設定成功")
+        } catch {
+            print("⚠️ [Haptics] AVAudioSession設定失敗: \(error)")
+        }
+        #endif
+        
         #if canImport(CoreHaptics)
-        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
-        guard engine == nil else { return }
+        let supportsHaptics = CHHapticEngine.capabilitiesForHardware().supportsHaptics
+        print("🔧 [Haptics] supportsHaptics: \(supportsHaptics)")
+        guard supportsHaptics else {
+            print("⚠️ [Haptics] ハードウェアが振動をサポートしていません")
+            return
+        }
+        guard engine == nil else {
+            print("🔧 [Haptics] エンジンはすでに初期化済み")
+            return
+        }
         do {
             engine = try CHHapticEngine()
             try engine?.start()
+            print("✅ [Haptics] エンジンの起動に成功")
         } catch {
+            print("❌ [Haptics] エンジンの起動に失敗: \(error)")
             engine = nil
         }
         #endif
@@ -809,66 +882,121 @@ final class HapticsPlayer {
         if impactGenerator == nil {
             impactGenerator = UIImpactFeedbackGenerator(style: .heavy)
             impactGenerator?.prepare()
+            print("✅ [Haptics] UIImpactFeedbackGenerator (heavy) を準備")
         }
         #endif
     }
 
     func play(count: Int) async {
         guard count > 0 else { return }
+        print("🎵 [Haptics] play(count: \(count)) 呼び出し")
 
         #if canImport(CoreHaptics)
         if CHHapticEngine.capabilitiesForHardware().supportsHaptics {
+            print("🎵 [Haptics] CoreHaptics使用を試行")
             do {
-                if engine == nil { prepareEngine() }
-                guard engine != nil else { throw NSError(domain: "HapticsPlayer", code: 0, userInfo: nil) }
+                if engine == nil {
+                    print("🎵 [Haptics] エンジン未初期化のため prepareEngine 呼び出し")
+                    prepareEngine()
+                }
+                guard engine != nil else {
+                    print("❌ [Haptics] エンジンがnil、フォールバック")
+                    throw NSError(domain: "HapticsPlayer", code: 0, userInfo: nil)
+                }
 
-                // 回数どおり N 回、CoreHaptics で連続振動（1秒）を N 回。強度・シャープネス最大で着信バイブに近い長さ
-                let events: [CHHapticEvent] = (0..<count).map { i in
-                    CHHapticEvent(
+                // 回数どおり N 回、CoreHaptics で振動。強度・シャープネス最大
+                // hapticContinuous（連続）とhapticTransient（瞬間衝撃）を組み合わせてより強い振動に
+                print("🎵 [Haptics] パラメータ - intensity: 1.0, sharpness: 1.0, duration: \(Self.vibrationDuration)秒（Continuous + Transient併用）")
+                var events: [CHHapticEvent] = []
+                for i in 0..<count {
+                    let startTime = Double(i) * Self.slotDuration
+                    // 瞬間的な強い衝撃（より強く感じる）
+                    events.append(CHHapticEvent(
+                        eventType: .hapticTransient,
+                        parameters: [
+                            CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                            CHHapticEventParameter(parameterID: .hapticSharpness, value: 1.0)
+                        ],
+                        relativeTime: startTime
+                    ))
+                    // 連続振動で持続感を追加
+                    events.append(CHHapticEvent(
                         eventType: .hapticContinuous,
                         parameters: [
                             CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
                             CHHapticEventParameter(parameterID: .hapticSharpness, value: 1.0)
                         ],
-                        relativeTime: Double(i) * Self.slotDuration,
+                        relativeTime: startTime,
                         duration: Self.vibrationDuration
-                    )
+                    ))
                 }
                 let pattern = try CHHapticPattern(events: events, parameters: [])
                 let player = try engine?.makePlayer(with: pattern)
                 try player?.start(atTime: 0)
+                print("✅ [Haptics] CoreHaptics再生成功")
                 return
             } catch {
+                print("❌ [Haptics] CoreHaptics再生エラー、フォールバック: \(error)")
                 // フォールバックへ
             }
+        } else {
+            print("⚠️ [Haptics] CoreHapticsがサポートされていない、フォールバック")
         }
         #endif
 
         #if canImport(UIKit)
+        print("🎵 [Haptics] UIImpactFeedbackGeneratorでフォールバック再生")
         if impactGenerator == nil { prepareEngine() }
-        guard let g = impactGenerator else { return }
+        guard let g = impactGenerator else {
+            print("❌ [Haptics] UIImpactFeedbackGenerator取得失敗")
+            return
+        }
         g.prepare()
-        for _ in 0..<count {
+        for i in 0..<count {
+            print("🎵 [Haptics] impactOccurred (\(i+1)/\(count))")
             g.impactOccurred()
             do {
                 try await Task.sleep(nanoseconds: UInt64(Self.vibrationDuration * 1_000_000_000))
             } catch {
+                print("❌ [Haptics] sleep中断")
                 break
             }
         }
+        print("✅ [Haptics] フォールバック再生完了")
         #endif
     }
 
     /// 長時間の連続振動（例: 音量ボタン長押しで約4秒）
     func playLong(duration: TimeInterval) async {
         guard duration > 0 else { return }
+        print("🎵 [Haptics] playLong(duration: \(duration)秒) 呼び出し")
 
         #if canImport(CoreHaptics)
         if CHHapticEngine.capabilitiesForHardware().supportsHaptics {
+            print("🎵 [Haptics] CoreHaptics使用を試行（長振動）")
             do {
-                if engine == nil { prepareEngine() }
-                guard engine != nil else { throw NSError(domain: "HapticsPlayer", code: 0, userInfo: nil) }
-                let event = CHHapticEvent(
+                if engine == nil {
+                    print("🎵 [Haptics] エンジン未初期化のため prepareEngine 呼び出し")
+                    prepareEngine()
+                }
+                guard engine != nil else {
+                    print("❌ [Haptics] エンジンがnil、フォールバック")
+                    throw NSError(domain: "HapticsPlayer", code: 0, userInfo: nil)
+                }
+                print("🎵 [Haptics] パラメータ - intensity: 1.0, sharpness: 1.0, duration: \(duration)秒（Transient + Continuous併用）")
+                // 長振動：最初に強い衝撃を与えてから連続振動
+                var events: [CHHapticEvent] = []
+                // 最初の強い衝撃
+                events.append(CHHapticEvent(
+                    eventType: .hapticTransient,
+                    parameters: [
+                        CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                        CHHapticEventParameter(parameterID: .hapticSharpness, value: 1.0)
+                    ],
+                    relativeTime: 0
+                ))
+                // 連続振動
+                events.append(CHHapticEvent(
                     eventType: .hapticContinuous,
                     parameters: [
                         CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
@@ -876,31 +1004,43 @@ final class HapticsPlayer {
                     ],
                     relativeTime: 0,
                     duration: duration
-                )
-                let pattern = try CHHapticPattern(events: [event], parameters: [])
+                ))
+                let pattern = try CHHapticPattern(events: events, parameters: [])
                 let player = try engine?.makePlayer(with: pattern)
                 try player?.start(atTime: 0)
+                print("✅ [Haptics] CoreHaptics長振動再生成功")
                 return
             } catch {
+                print("❌ [Haptics] CoreHaptics長振動再生エラー、フォールバック: \(error)")
                 // フォールバックへ
             }
+        } else {
+            print("⚠️ [Haptics] CoreHapticsがサポートされていない、フォールバック")
         }
         #endif
 
         #if canImport(UIKit)
+        print("🎵 [Haptics] UIImpactFeedbackGeneratorでフォールバック再生（長振動）")
         if impactGenerator == nil { prepareEngine() }
-        guard let g = impactGenerator else { return }
+        guard let g = impactGenerator else {
+            print("❌ [Haptics] UIImpactFeedbackGenerator取得失敗")
+            return
+        }
         g.prepare()
         let slot = Self.vibrationDuration
         let steps = max(1, Int(duration / slot))
-        for _ in 0..<steps {
+        print("🎵 [Haptics] \(steps)回に分割して再生")
+        for i in 0..<steps {
+            print("🎵 [Haptics] impactOccurred (\(i+1)/\(steps))")
             g.impactOccurred()
             do {
                 try await Task.sleep(nanoseconds: UInt64(slot * 1_000_000_000))
             } catch {
+                print("❌ [Haptics] sleep中断")
                 break
             }
         }
+        print("✅ [Haptics] フォールバック長振動再生完了")
         #endif
     }
 }
@@ -910,10 +1050,15 @@ final class HapticsPlayer {
 @MainActor
 final class VolumeButtonObserver {
     var onPress: (() -> Void)?
+    var onCommit: (() -> Void)?
 
     private var isEnabled = false
     private var lastVolume: Float?
     private var observation: NSKeyValueObservation?
+    #if canImport(MediaPlayer) && canImport(UIKit)
+    private var volumeView: MPVolumeView?
+    #endif
+    private var isResetting = false
 
     func setEnabled(_ enabled: Bool) {
         guard enabled != isEnabled else { return }
@@ -935,9 +1080,24 @@ final class VolumeButtonObserver {
             // 失敗してもボタン送信があるので致命的ではない
         }
 
+        // MPVolumeViewを初期化（音量設定用）
+        #if canImport(MediaPlayer) && canImport(UIKit)
+        if volumeView == nil {
+            volumeView = MPVolumeView(frame: .zero)
+            volumeView?.showsRouteButton = false
+            volumeView?.showsVolumeSlider = true
+        }
+        #endif
+
         lastVolume = AVAudioSession.sharedInstance().outputVolume
         observation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
             guard let self else { return }
+            
+            // リセット中の音量変化は無視
+            if self.isResetting {
+                return
+            }
+            
             let newValue = change.newValue ?? 0
             // 初回や同値通知を避ける
             if let last = self.lastVolume, abs(last - newValue) < 0.0001 {
@@ -954,6 +1114,39 @@ final class VolumeButtonObserver {
     private func stop() {
         observation?.invalidate()
         observation = nil
+    }
+    
+    /// 送信完了後に音量を0%にリセット
+    func resetVolumeAfterSend() {
+        Task { @MainActor in
+            self.isResetting = true
+            
+            #if canImport(MediaPlayer) && canImport(UIKit)
+            guard let volumeView = self.volumeView else {
+                self.isResetting = false
+                return
+            }
+            
+            // MPVolumeViewからスライダーを取得して音量を設定
+            for subview in volumeView.subviews {
+                if let slider = subview as? UISlider {
+                    let targetVolume: Float = 0.0
+                    slider.value = targetVolume
+                    self.lastVolume = targetVolume
+                    print("[VolumeButton] 音量を\(targetVolume)にリセット（送信完了後）")
+                    break
+                }
+            }
+            #endif
+            
+            // リセット後、少し待ってからフラグを解除
+            do {
+                try await Task.sleep(nanoseconds: 300_000_000) // 300ms
+            } catch {
+                // キャンセルされても問題なし
+            }
+            self.isResetting = false
+        }
     }
 }
 
