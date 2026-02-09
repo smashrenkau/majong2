@@ -54,12 +54,6 @@ struct ContentView: View {
                 }
             }
             .background {
-                // 振動受信時の背景色点滅
-                (appModel.isFlashing ? Color.red.opacity(0.3) : Color.clear)
-                    .animation(.easeInOut(duration: 0.15), value: appModel.isFlashing)
-                    .ignoresSafeArea()
-            }
-            .background {
                 // 音量ボタン監視用（ベストエフォート）。UI上は見えない/邪魔にならないようにする。
                 VolumeViewHost()
                     .frame(width: 0, height: 0)
@@ -216,7 +210,6 @@ final class AppModel: ObservableObject {
     @Published var logs: [LogItem] = []
     @Published var lastErrorMessage: String?
     @Published var isVolumeInputEnabled: Bool = false
-    @Published var isFlashing: Bool = false
 
     @Published private(set) var firebaseConfigured: Bool = false
     @Published private(set) var myUid: String?
@@ -422,16 +415,13 @@ final class AppModel: ObservableObject {
             if event.isLongVibration {
                 self.logs.insert(LogItem(kind: .rx, count: 0, date: Date(), isLongVibration: true), at: 0)
                 Task {
-                    await self.hapticsPlayer.playLong(duration: 4.0)
+                    await self.hapticsPlayer.playLong(duration: 3.0)
                 }
-                self.flashBackground(duration: 4.0)
             } else {
                 self.logs.insert(LogItem(kind: .rx, count: event.count, date: Date()), at: 0)
                 Task {
                     await self.hapticsPlayer.play(count: event.count)
                 }
-                let duration = Double(event.count) * (HapticsPlayer.vibrationDuration + HapticsPlayer.gapBetweenVibrations)
-                self.flashBackground(duration: duration)
             }
         }
     }
@@ -449,7 +439,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 音量ボタン長押しで送信: 受信側で約4秒の連続振動
+    /// 音量ボタン長押しで送信: 受信側で約3秒の連続振動
     func sendLongVibration() async {
         guard let roomId, let myUid else { return }
         do {
@@ -458,22 +448,6 @@ final class AppModel: ObservableObject {
             logs.insert(LogItem(kind: .tx, count: 0, date: Date(), isLongVibration: true), at: 0)
         } catch {
             lastErrorMessage = "送信失敗: \(error.localizedDescription)"
-        }
-    }
-    
-    /// 背景色を点滅させる
-    private func flashBackground(duration: TimeInterval) {
-        guard duration > 0 else { return }
-        isFlashing = true
-        Task {
-            do {
-                try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
-            } catch {
-                // キャンセル時も点滅を終了
-            }
-            await MainActor.run {
-                self.isFlashing = false
-            }
         }
     }
 }
