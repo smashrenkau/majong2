@@ -37,3 +37,28 @@ UIの「音量ボタン入力を有効にする」をONにすると、`outputVol
 - システム音量が上下限付近だと反応しない/不安定になる場合があります
 - そのため **テスト送信ボタンは常に残しています**
 
+## トラブルシューティング
+
+### TestFlightでアプリがクラッシュする場合
+
+以下の点を確認してください：
+
+1. **GoogleService-Info.plistの配置**
+   - `majoing3/GoogleService-Info.plist` に配置されていることを確認
+   - `Preview Content` フォルダ内にある場合はリリースビルドに含まれません
+
+2. **entitlementsファイル**
+   - `majoing3.entitlements` にmacOS用の設定（App Sandbox等）が含まれていないことを確認
+   - iOS用の最小限の設定にしてください
+
+3. **Firebase初期化**
+   - `FirebaseApp.configure()` が一度だけ呼ばれることを確認
+   - 二重初期化はクラッシュの原因になります
+
+4. **クラッシュログの確認**
+   - Xcode → Window → Organizer → Crashes でクラッシュログを確認
+   - TestFlightの場合、App Store Connect → TestFlight → Builds → クラッシュ でも確認可能
+
+5. **デバッグログ**
+   - アプリは詳細なデバッグログを出力します
+   - Xcodeのコンソールで `[DEBUG]`, `[ERROR]`, `[Haptics]` などのログを確認してください

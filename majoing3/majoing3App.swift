@@ -12,10 +12,6 @@ import FirebaseCore
 struct majoing3App: App {
     @StateObject private var appModel = AppModel()
 
-    init() {
-        FirebaseApp.configure()
-    }
-
     var body: some Scene {
         WindowGroup {
             ContentView()

@@ -334,20 +334,24 @@ final class AppModel: ObservableObject {
 
     private func configureFirebaseIfPossible() {
         guard FirebaseApp.app() == nil else {
+            print("[DEBUG] configureFirebaseIfPossible: Firebase already configured")
             firebaseConfigured = true
             return
         }
 
         // GoogleService-Info.plist が無いと configure が失敗し得るので、存在チェックを入れる
         let hasPlist = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil
+        print("[DEBUG] configureFirebaseIfPossible: hasPlist=\(hasPlist)")
         guard hasPlist else {
             firebaseConfigured = false
             lastErrorMessage = "GoogleService-Info.plist が見つかりません（Firebase未構成）"
+            print("[ERROR] GoogleService-Info.plist not found in bundle")
             return
         }
 
         FirebaseApp.configure()
         firebaseConfigured = true
+        print("[DEBUG] configureFirebaseIfPossible: Firebase configured successfully")
     }
 
     private func signInAnonymously() async {
@@ -1076,37 +1080,49 @@ final class VolumeButtonObserver {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setActive(true, options: [])
+            print("[VolumeButton] AVAudioSession activated successfully")
         } catch {
             // 失敗してもボタン送信があるので致命的ではない
+            print("[VolumeButton] AVAudioSession activation failed: \(error.localizedDescription)")
         }
 
         // MPVolumeViewを初期化（音量設定用）
         #if canImport(MediaPlayer) && canImport(UIKit)
-        if volumeView == nil {
-            volumeView = MPVolumeView(frame: .zero)
-            volumeView?.showsRouteButton = false
-            volumeView?.showsVolumeSlider = true
+        do {
+            if volumeView == nil {
+                volumeView = MPVolumeView(frame: .zero)
+                volumeView?.showsRouteButton = false
+                volumeView?.showsVolumeSlider = true
+                print("[VolumeButton] MPVolumeView created")
+            }
+        } catch {
+            print("[VolumeButton] MPVolumeView creation failed: \(error)")
         }
         #endif
 
-        lastVolume = AVAudioSession.sharedInstance().outputVolume
-        observation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
-            guard let self else { return }
-            
-            // リセット中の音量変化は無視
-            if self.isResetting {
-                return
+        do {
+            lastVolume = AVAudioSession.sharedInstance().outputVolume
+            observation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
+                guard let self else { return }
+                
+                // リセット中の音量変化は無視
+                if self.isResetting {
+                    return
+                }
+                
+                let newValue = change.newValue ?? 0
+                // 初回や同値通知を避ける
+                if let last = self.lastVolume, abs(last - newValue) < 0.0001 {
+                    return
+                }
+                self.lastVolume = newValue
+                Task { @MainActor in
+                    self.onPress?()
+                }
             }
-            
-            let newValue = change.newValue ?? 0
-            // 初回や同値通知を避ける
-            if let last = self.lastVolume, abs(last - newValue) < 0.0001 {
-                return
-            }
-            self.lastVolume = newValue
-            Task { @MainActor in
-                self.onPress?()
-            }
+            print("[VolumeButton] Volume observation started")
+        } catch {
+            print("[VolumeButton] Volume observation failed: \(error)")
         }
         #endif
     }
