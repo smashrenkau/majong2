@@ -70,7 +70,6 @@ struct ContentView: View {
 
     private var longVibrationSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "長振動")
             Button {
                 Task { await appModel.sendLongVibration() }
             } label: {
@@ -112,7 +111,6 @@ struct ContentView: View {
                 .disabled(appModel.roomId == nil)
             }
 
-            LabeledRow(label: "参加中ルーム", value: appModel.roomId ?? "未参加（常にAAAで入室）")
             LabeledRow(label: "相手", value: appModel.peerJoined ? "ON" : (appModel.roomId == nil ? "—" : "未参加"))
         }
         .padding(12)
