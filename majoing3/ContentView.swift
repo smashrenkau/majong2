@@ -104,7 +104,7 @@ struct ContentView: View {
                 .disabled(!appModel.canOperateFirebase)
 
                 Button("退出") {
-                    appModel.leaveRoom()
+                    Task { await appModel.leaveRoomWaitingFirestore() }
                 }
                 .buttonStyle(.bordered)
                 .disabled(appModel.roomId == nil)
@@ -292,15 +292,20 @@ final class AppModel: ObservableObject {
     var canSend: Bool { canOperateFirebase && roomId != nil }
 
     func startIfNeeded() async {
+        print("[DEBUG] startIfNeeded entry firebaseConfigured=\(firebaseConfigured) myUid=\(myUid ?? "nil")")
         if !firebaseConfigured {
             configureFirebaseIfPossible()
+            print("[DEBUG] startIfNeeded after configure firebaseConfigured=\(firebaseConfigured)")
         }
 
         if myUid == nil, firebaseConfigured {
+            print("[DEBUG] startIfNeeded calling signInAnonymously")
             await signInAnonymously()
+            print("[DEBUG] startIfNeeded after signIn myUid=\(myUid ?? "nil")")
         }
 
         networkMonitor.start()
+        print("[DEBUG] startIfNeeded done")
     }
 
     private func configureFirebaseIfPossible() {
@@ -322,10 +327,13 @@ final class AppModel: ObservableObject {
     }
 
     private func signInAnonymously() async {
+        print("[DEBUG] signInAnonymously start")
         do {
             let result = try await AuthService.signInAnonymously()
             myUid = result.user.uid
+            print("[DEBUG] signInAnonymously success uid=\(result.user.uid)")
         } catch {
+            print("[DEBUG] signInAnonymously failed \(error.localizedDescription)")
             lastErrorMessage = "匿名サインイン失敗: \(error.localizedDescription)"
         }
     }
@@ -348,17 +356,34 @@ final class AppModel: ObservableObject {
     }
 
     func joinRoom(roomId: String) async {
-        guard !roomId.isEmpty else { return }
-        guard let uid = myUid else { return }
+        print("[DEBUG] joinRoom(entry) roomId=\(roomId), myUid=\(myUid ?? "nil"), firebaseConfigured=\(firebaseConfigured)")
+        guard !roomId.isEmpty else {
+            print("[DEBUG] joinRoom(exit) roomId empty")
+            return
+        }
+        guard let uid = myUid else {
+            print("[DEBUG] joinRoom(exit) myUid is nil - 未サインインの可能性")
+            return
+        }
+        print("[DEBUG] joinRoom calling RoomService.joinRoom")
         do {
             try await RoomService.joinRoom(roomId: roomId, myUid: uid)
+            print("[DEBUG] joinRoom RoomService done, calling attachToRoom")
             attachToRoom(roomId: roomId)
         } catch {
+            let nsErr = error as NSError
+            print("[DEBUG] joinRoom catch domain=\(nsErr.domain) code=\(nsErr.code) desc=\(error.localizedDescription)")
             lastErrorMessage = "ルーム参加失敗: \(error.localizedDescription)"
         }
     }
 
-    func leaveRoom() {
+    /// 退室: Firestore の members から自分を削除してから状態をクリア（直後の「参加」で満員にならないようにする）
+    func leaveRoomWaitingFirestore() async {
+        let currentRoomId = roomId
+        let currentUid = myUid
+        if let rid = currentRoomId, let uid = currentUid {
+            try? await RoomService.leaveRoom(roomId: rid, myUid: uid)
+        }
         roomListener?.remove()
         eventsListener?.remove()
         roomListener = nil
@@ -463,12 +488,10 @@ struct RemoteEvent {
 }
 
 enum AppError: LocalizedError {
-    case roomFull
     case roomNotFound
 
     var errorDescription: String? {
         switch self {
-        case .roomFull: return "ルームが満員です（最大2人）"
         case .roomNotFound: return "ルームが見つかりません"
         }
     }
@@ -496,6 +519,7 @@ enum AuthService {
 
 enum RoomService {
     static func createRoom(roomId: String, myUid: String) async throws {
+        print("[DEBUG] createRoom roomId=\(roomId)")
         let db = Firestore.firestore()
         let ref = db.collection("rooms").document(roomId)
         let data: [String: Any] = [
@@ -503,42 +527,84 @@ enum RoomService {
             "createdAt": FieldValue.serverTimestamp()
         ]
         try await ref.setData(data, merge: false)
+        print("[DEBUG] createRoom done")
     }
 
     static func joinRoom(roomId: String, myUid: String) async throws {
+        let authUid = Auth.auth().currentUser?.uid
+        print("[DEBUG] RoomService.joinRoom start roomId=\(roomId) authCurrentUid=\(authUid ?? "nil")")
         let db = Firestore.firestore()
         let ref = db.collection("rooms").document(roomId)
+        print("[DEBUG] RoomService.joinRoom path=rooms/\(roomId) (getDocument then updateData)")
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            db.runTransaction({ transaction, errorPointer in
+        // getDocument を試み、権限エラーや未存在の場合はルームを自動作成する
+        let snapshot: DocumentSnapshot
+        do {
+            snapshot = try await ref.getDocument()
+            print("[DEBUG] RoomService.joinRoom getDocument OK exists=\(snapshot.exists)")
+        } catch {
+            let ne = error as NSError
+            print("[DEBUG] RoomService.joinRoom getDocument failed domain=\(ne.domain) code=\(ne.code)")
+
+            // 権限エラー (code=7) の場合、ルームが未作成の可能性が高い → 自動作成を試みる
+            if ne.domain == "FIRFirestoreErrorDomain" && ne.code == 7 {
+                print("[DEBUG] RoomService.joinRoom permission denied → attempting to create room")
                 do {
-                    let snapshot = try transaction.getDocument(ref)
-                    guard snapshot.exists else {
-                        throw AppError.roomNotFound
-                    }
-
-                    let members = (snapshot.data()?["members"] as? [String]) ?? []
-                    if members.contains(myUid) {
-                        return nil
-                    }
-                    if members.count >= 2 {
-                        throw AppError.roomFull
-                    }
-
-                    transaction.updateData(["members": members + [myUid]], forDocument: ref)
-                    return nil
+                    try await RoomService.createRoom(roomId: roomId, myUid: myUid)
+                    print("[DEBUG] RoomService.joinRoom room auto-created successfully")
+                    return
                 } catch {
-                    errorPointer?.pointee = error as NSError
-                    return nil
+                    let createErr = error as NSError
+                    print("[DEBUG] RoomService.joinRoom auto-create also failed domain=\(createErr.domain) code=\(createErr.code) desc=\(error.localizedDescription)")
+                    // 自動作成も失敗した場合は元のエラーではなく分かりやすいメッセージを返す
+                    throw NSError(
+                        domain: "RoomService",
+                        code: ne.code,
+                        userInfo: [NSLocalizedDescriptionKey: "ルームの読み取りに失敗しました（権限エラー）。Firestore ルールが正しくデプロイされているか確認してください。"]
+                    )
                 }
-            }, completion: { _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            })
+            }
+            throw error
         }
+
+        // ルームが存在しない場合は自動作成
+        guard snapshot.exists else {
+            print("[DEBUG] RoomService.joinRoom room not found → creating room")
+            try await RoomService.createRoom(roomId: roomId, myUid: myUid)
+            print("[DEBUG] RoomService.joinRoom room created successfully")
+            return
+        }
+
+        let members = (snapshot.data()?["members"] as? [String]) ?? []
+        print("[DEBUG] joinRoom members.count=\(members.count), containsMyUid=\(members.contains(myUid))")
+        if members.contains(myUid) {
+            print("[DEBUG] joinRoom already in room")
+            return
+        }
+
+        do {
+            print("[DEBUG] joinRoom updateData members")
+            try await ref.updateData(["members": members + [myUid]])
+            print("[DEBUG] RoomService.joinRoom success")
+        } catch {
+            let ne = error as NSError
+            print("[DEBUG] RoomService.joinRoom updateData failed domain=\(ne.domain) code=\(ne.code)")
+            throw error
+        }
+    }
+
+    /// ルームの members から自分を削除する（退室）。未参加の場合は何もしない。
+    static func leaveRoom(roomId: String, myUid: String) async throws {
+        let db = Firestore.firestore()
+        let ref = db.collection("rooms").document(roomId)
+        let snapshot = try await ref.getDocument()
+        print("[DEBUG] leaveRoom roomId=\(roomId), exists=\(snapshot.exists)")
+        guard snapshot.exists,
+              var members = snapshot.data()?["members"] as? [String] else { return }
+        guard members.contains(myUid) else { return }
+        members.removeAll { $0 == myUid }
+        print("[DEBUG] leaveRoom updating members count=\(members.count)")
+        try await ref.updateData(["members": members])
     }
 }
 
