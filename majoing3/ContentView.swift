@@ -317,9 +317,22 @@ final class AppModel: ObservableObject {
 
     func startIfNeeded() async {
         print("[DEBUG] startIfNeeded entry firebaseConfigured=\(firebaseConfigured) myUid=\(myUid ?? "nil")")
-        if !firebaseConfigured {
-            configureFirebaseIfPossible()
-            print("[DEBUG] startIfNeeded after configure firebaseConfigured=\(firebaseConfigured)")
+        
+        // FirebaseがAppDelegateで初期化されるまで少し待つ
+        var retries = 0
+        while FirebaseApp.app() == nil && retries < 10 {
+            print("[DEBUG] startIfNeeded: Waiting for Firebase initialization... attempt \(retries + 1)")
+            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            retries += 1
+        }
+        
+        // FirebaseがAppDelegateで既に初期化されているか確認
+        if FirebaseApp.app() != nil {
+            firebaseConfigured = true
+            print("[DEBUG] startIfNeeded: Firebase already configured by AppDelegate")
+        } else {
+            print("[ERROR] startIfNeeded: Firebase initialization failed after \(retries) retries")
+            lastErrorMessage = "Firebase初期化タイムアウト"
         }
 
         if myUid == nil, firebaseConfigured {
@@ -330,28 +343,6 @@ final class AppModel: ObservableObject {
 
         networkMonitor.start()
         print("[DEBUG] startIfNeeded done")
-    }
-
-    private func configureFirebaseIfPossible() {
-        guard FirebaseApp.app() == nil else {
-            print("[DEBUG] configureFirebaseIfPossible: Firebase already configured")
-            firebaseConfigured = true
-            return
-        }
-
-        // GoogleService-Info.plist が無いと configure が失敗し得るので、存在チェックを入れる
-        let hasPlist = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil
-        print("[DEBUG] configureFirebaseIfPossible: hasPlist=\(hasPlist)")
-        guard hasPlist else {
-            firebaseConfigured = false
-            lastErrorMessage = "GoogleService-Info.plist が見つかりません（Firebase未構成）"
-            print("[ERROR] GoogleService-Info.plist not found in bundle")
-            return
-        }
-
-        FirebaseApp.configure()
-        firebaseConfigured = true
-        print("[DEBUG] configureFirebaseIfPossible: Firebase configured successfully")
     }
 
     private func signInAnonymously() async {
@@ -854,11 +845,13 @@ final class HapticsPlayer {
         // AVAudioSessionを設定して振動を最大化
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try audioSession.setActive(true)
+            // より安全なカテゴリ設定
+            try audioSession.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try audioSession.setActive(true, options: [])
             print("✅ [Haptics] AVAudioSession設定成功")
-        } catch {
-            print("⚠️ [Haptics] AVAudioSession設定失敗: \(error)")
+        } catch let error as NSError {
+            print("⚠️ [Haptics] AVAudioSession設定失敗: \(error.domain) code=\(error.code) - \(error.localizedDescription)")
+            // AVAudioSessionの設定失敗は致命的ではないので続行
         }
         #endif
         
@@ -1088,42 +1081,35 @@ final class VolumeButtonObserver {
 
         // MPVolumeViewを初期化（音量設定用）
         #if canImport(MediaPlayer) && canImport(UIKit)
-        do {
-            if volumeView == nil {
-                volumeView = MPVolumeView(frame: .zero)
-                volumeView?.showsRouteButton = false
-                volumeView?.showsVolumeSlider = true
-                print("[VolumeButton] MPVolumeView created")
-            }
-        } catch {
-            print("[VolumeButton] MPVolumeView creation failed: \(error)")
+        if volumeView == nil {
+            volumeView = MPVolumeView(frame: .zero)
+            volumeView?.showsRouteButton = false
+            volumeView?.showsVolumeSlider = true
+            print("[VolumeButton] MPVolumeView created")
         }
         #endif
 
-        do {
-            lastVolume = AVAudioSession.sharedInstance().outputVolume
-            observation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
-                guard let self else { return }
-                
-                // リセット中の音量変化は無視
-                if self.isResetting {
-                    return
-                }
-                
-                let newValue = change.newValue ?? 0
-                // 初回や同値通知を避ける
-                if let last = self.lastVolume, abs(last - newValue) < 0.0001 {
-                    return
-                }
-                self.lastVolume = newValue
-                Task { @MainActor in
-                    self.onPress?()
-                }
+        // 音量監視を開始（エラーハンドリング付き）
+        lastVolume = AVAudioSession.sharedInstance().outputVolume
+        observation = AVAudioSession.sharedInstance().observe(\.outputVolume, options: [.new]) { [weak self] _, change in
+            guard let self else { return }
+            
+            // リセット中の音量変化は無視
+            if self.isResetting {
+                return
             }
-            print("[VolumeButton] Volume observation started")
-        } catch {
-            print("[VolumeButton] Volume observation failed: \(error)")
+            
+            let newValue = change.newValue ?? 0
+            // 初回や同値通知を避ける
+            if let last = self.lastVolume, abs(last - newValue) < 0.0001 {
+                return
+            }
+            self.lastVolume = newValue
+            Task { @MainActor in
+                self.onPress?()
+            }
         }
+        print("[VolumeButton] Volume observation started")
         #endif
     }
 

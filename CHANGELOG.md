@@ -1,5 +1,43 @@
 # 変更履歴
 
+## 2026-02-10 (2回目) - Firebase初期化タイミングの修正
+
+### 問題
+前回の修正後もTestFlightでクラッシュが継続。
+
+### 原因
+Firebaseの初期化タイミングに問題がありました：
+- `.task`モディファイアは非同期で実行されるため、初期化のタイミングでクラッシュ
+- AVAudioSessionの設定が不適切
+- Info.plistの設定が不足
+
+### 修正内容
+
+#### 1. AppDelegateでFirebaseを初期化
+- `@UIApplicationDelegateAdaptor`を使用
+- アプリ起動時に確実にFirebaseを初期化
+- GoogleService-Info.plistの存在確認を追加
+
+#### 2. Info.plistの追加
+- NSPrivacyAccessedAPITypes（iOS 17対応）を追加
+- UIBackgroundModesにaudioを追加
+- GENERATE_INFOPLIST_FILE = NO に変更
+
+#### 3. AVAudioSessionの設定改善
+- `.playback`から`.ambient`に変更（より安全）
+- エラーハンドリングを強化
+
+#### 4. Firebase初期化待機ロジック
+- `startIfNeeded()`でFirebase初期化を待機
+- タイムアウト処理を追加（最大1秒）
+
+### テスト手順
+1. Xcodeでクリーンビルド
+2. 実機でテスト
+3. TestFlightにアップロード
+
+---
+
 ## 2026-02-10 - TestFlightクラッシュ修正
 
 ### 問題

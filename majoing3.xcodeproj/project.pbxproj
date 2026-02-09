@@ -23,8 +23,9 @@
 		2782236F2F289C4F0029E11A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		278223712F289C530029E11A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		278223732F289C530029E11A /* majoing3.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = majoing3.entitlements; sourceTree = "<group>"; };
-		278223752F289C530029E11A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
-		2782237C2F28A4480029E11A /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+	278223752F289C530029E11A /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+	2782237C2F28A4480029E11A /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+	27INFOPLI2F28B0000029E11A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -63,6 +64,7 @@
 			2782236D2F289C4F0029E11A /* majoing3App.swift */,
 			2782236F2F289C4F0029E11A /* ContentView.swift */,
 			2782237C2F28A4480029E11A /* GoogleService-Info.plist */,
+			27INFOPLI2F28B0000029E11A /* Info.plist */,
 			278223712F289C530029E11A /* Assets.xcassets */,
 			278223732F289C530029E11A /* majoing3.entitlements */,
 			278223742F289C530029E11A /* Preview Content */,
@@ -291,7 +293,8 @@
 			DEVELOPMENT_ASSET_PATHS = "\"majoing3/Preview Content\"";
 			DEVELOPMENT_TEAM = 554G537DSV;
 			ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = majoing3/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -329,7 +332,8 @@
 			DEVELOPMENT_ASSET_PATHS = "\"majoing3/Preview Content\"";
 			DEVELOPMENT_TEAM = 554G537DSV;
 			ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = majoing3/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
