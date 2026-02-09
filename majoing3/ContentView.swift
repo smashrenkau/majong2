@@ -37,7 +37,6 @@ struct ContentView: View {
                     longVibrationSection
                     roomSection
                     sendSection
-                    volumeSection
                     logSection
                 }
                 .padding()
@@ -72,13 +71,10 @@ struct ContentView: View {
     private var longVibrationSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "長振動")
-            Text("相手に約4秒の連続振動を送ります。音量ボタンを0.5秒以内に5回以上押しても送信できます。受信時は画面背景が赤く点滅します。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             Button {
                 Task { await appModel.sendLongVibration() }
             } label: {
-                Text("長振動を送信")
+                Text("シフトを提出する")
                     .font(.title3)
                     .fontWeight(.semibold)
                     .frame(maxWidth: .infinity)
@@ -117,7 +113,7 @@ struct ContentView: View {
             }
 
             LabeledRow(label: "参加中ルーム", value: appModel.roomId ?? "未参加（常にAAAで入室）")
-            LabeledRow(label: "相手", value: appModel.peerJoined ? "参加中" : (appModel.roomId == nil ? "—" : "未参加"))
+            LabeledRow(label: "相手", value: appModel.peerJoined ? "ON" : (appModel.roomId == nil ? "—" : "未参加"))
         }
         .padding(12)
         .background(.thinMaterial)
@@ -128,10 +124,6 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "シフト回数")
 
-            Text("音量ボタンが取れない場合に備えて、必ずボタン送信も残しています。相手が受信すると、指定回数分の振動と画面背景の赤い点滅が表示されます。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
             HStack(spacing: 8) {
                 ForEach(1...9, id: \.self) { n in
                     Button("\(n)") {
@@ -141,19 +133,6 @@ struct ContentView: View {
                     .disabled(!appModel.canSend)
                 }
             }
-        }
-        .padding(12)
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var volumeSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(title: "音量ボタン（ベストエフォート）")
-
-            Text("ルーム入室中は常に音量ボタン入力を有効にしています。音量ボタンを押すたびにカウントされ、最後の押下から1秒後に回数分の振動が送信されます（例：5回押すと5回振動）。0.5秒以内に5回以上押すと長振動（約4秒）を送信します。\n\n音量ボタン押下後、自動的に音量が0%にリセットされます。音量増加ボタン（+）を使えば、1回押すごとに1段階ずつ確実に反応します（1回押す→1回振動、9回押す→9回振動）。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(.thinMaterial)
