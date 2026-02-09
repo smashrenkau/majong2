@@ -1,5 +1,35 @@
 # 変更履歴
 
+## 2026-02-10 (3回目) - Info.plist修正
+
+### 問題
+実機へのインストール時にエラー：
+```
+The item at majoing3.app is not a valid bundle.
+Failed to get the identifier for the app to be installed.
+Ensure that your bundle's Info.plist contains a value for the CFBundleIdentifier key.
+```
+
+### 原因
+Info.plistに必須のキーが不足していました。
+
+### 修正内容
+Info.plistに以下の必須キーを追加：
+- `CFBundleIdentifier`（Bundle ID）
+- `CFBundleExecutable`（実行ファイル名）
+- `CFBundleName`, `CFBundleVersion`, `CFBundleShortVersionString`
+- `LSRequiresIPhoneOS`（iOS専用アプリ）
+- `UIRequiredDeviceCapabilities`
+- `UISupportedInterfaceOrientations`（iPhone/iPad両対応）
+
+### 動作確認
+1. Xcodeでプロジェクトを開く
+2. Product → Clean Build Folder
+3. Product → Run（実機を選択）
+4. アプリが正常にインストール・起動することを確認
+
+---
+
 ## 2026-02-10 (2回目) - Firebase初期化タイミングの修正
 
 ### 問題
